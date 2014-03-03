@@ -1,0 +1,8 @@
+assets/
+build.xml
+lwjgl64.dll
+MANIFEST.MF
+master-application.jnlp
+nbproject/
+OpenAL64.dll
+test/
