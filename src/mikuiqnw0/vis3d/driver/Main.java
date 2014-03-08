@@ -8,7 +8,11 @@ import com.jme3.scene.Geometry;
 import com.jme3.scene.shape.Box;
 import com.jme3.system.AppSettings;
 import edu.emory.mathcs.jtransforms.fft.FloatFFT_1D;
+import java.awt.Dialog;
+import java.awt.FileDialog;
 import java.io.EOFException;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -31,8 +35,8 @@ import org.kc7bfi.jflac.util.ByteData;
  * digital signal processing concepts and object manipulation using audio data.
  *
  * @author MIKUiqnw0
- * @version 0.1
- * @since 5/03/14
+ * @version 0.11
+ * @since 9/03/14
  */
 public class Main extends SimpleApplication implements PCMProcessor {
 
@@ -41,7 +45,7 @@ public class Main extends SimpleApplication implements PCMProcessor {
     private SourceDataLine line;
     private Vector listeners = new Vector();
     private Thread audioThread;
-    protected static final int DIVISIBLE = 4096;
+    protected static final int DIVISIBLE = 2048;
     private Geometry[] geom = new Geometry[DIVISIBLE];
     private float[] geomScale = new float[DIVISIBLE];
 
@@ -99,8 +103,18 @@ public class Main extends SimpleApplication implements PCMProcessor {
 
     private void audioInit() throws IOException {
         FLACDecoder decoder;
-
-        is = getClass().getResourceAsStream("/sounds/track.flac");
+        FileDialog dialog = new FileDialog((Dialog) null, "Select a .flac file", FileDialog.LOAD);
+        dialog.setFile("*.flac");
+        dialog.setVisible(true);
+        
+        File flacFile = new File(dialog.getDirectory() + dialog.getFile());
+        dialog.dispose();
+        
+        if(flacFile.canRead()) {
+            is = new FileInputStream(flacFile);
+        } else {
+            is = getClass().getResourceAsStream("/sounds/track.flac");
+        }
 
         if (is != null) {
             decoder = new FLACDecoder(is);
@@ -121,8 +135,15 @@ public class Main extends SimpleApplication implements PCMProcessor {
     public void simpleUpdate(float tpf) {
         int geoElement = 0;
         for (Geometry geo : geom) {
-            //geo.setLocalTranslation(geo.getLocalTranslation().x, geomScale[geoElement], 0f);
-            geo.setLocalScale(1, geomScale[geoElement], 1);
+            if(geomScale[geoElement] > geo.getLocalScale().y) {
+                geo.setLocalScale(1, geomScale[geoElement], 1);
+            } else {
+                if(geo.getLocalScale().y > 0) {
+                    geo.setLocalScale(1, geo.getLocalScale().y - 0.5f, 1);
+                } else {
+                    geo.setLocalScale(1, 0, 1);
+                }
+            }
             ++geoElement;
         }
     }
@@ -136,8 +157,6 @@ public class Main extends SimpleApplication implements PCMProcessor {
             printMetadata();
             info = new DataLine.Info(SourceDataLine.class, fmt, AudioSystem.NOT_SPECIFIED);
             line = (SourceDataLine) AudioSystem.getLine(info);
-            // Add the listeners to the line at this point, it's the only
-            // way to get the events triggered.
             int size = listeners.size();
             for (int index = 0; index < size; index++) {
                 line.addLineListener((LineListener) listeners.get(index));
@@ -156,52 +175,55 @@ public class Main extends SimpleApplication implements PCMProcessor {
         short[] left = new short[pcm.getLen() / fmt.getFrameSize()];
         short[] right = new short[pcm.getLen() / fmt.getFrameSize()];
 
-        float[] fftLeft = new float[left.length * 2];
+        float[] fftLeft = new float[left.length];
         float[] mag = new float[fftLeft.length / 2];
-        float[] dB = new float[mag.length];
 
         // Split left and right channels from the byte data
         for (int i = 0; i < left.length; ++i) {
             left[i] = buf.getShort();
             right[i] = buf.getShort();
         }
-
+        
         // Apply Hanning window to the left channel
-        for (int i = 0; i < left.length; ++i) {
-            fftLeft[i] = hanningWindow(left[i], i, left.length);
+        hanningWindow(left, fftLeft);
+        
+        // Find the min/max 
+        float max = 0;
+        float min = 0;
+        for(int i = 0; i < fftLeft.length; ++i) {
+            if(fftLeft[i] > max) {
+                max = fftLeft[i];
+            } else if(fftLeft[i] < min) {
+                min = fftLeft[i];
+            }
+        }
+        
+        // Scale values between -1 - 1
+        float signedInverse = 1.0f / (max - min);
+        for(int i = 0; i < fftLeft.length; ++i) {
+            fftLeft[i] = (float) ((((fftLeft[i] - min) * signedInverse) * 2.0) - 1);
         }
 
-        // Zero out imaginary
-        for (int i = 0; i < left.length; i += 2) {
-            fftLeft[i + 1] = 0;
-        }
-
-        // In-place complex forward on left channel data
+        // In-place real forward on left channel data
         FloatFFT_1D cfft = new FloatFFT_1D(left.length);
-        cfft.complexForward(fftLeft);
-
-
-        // Process magnitudes, convert them to decibels and send scaled mag
-        // values to geomScale to be applied in simpleUpdate loop.
+        cfft.realForward(fftLeft);
+        
+        // Power Spectral Density
+        // Get magnitudes, convert to decibels and send to geomScale to be applied
+        // in the simpleUpdate loop.
         for (int i = 0; i < mag.length; ++i) {
-            mag[i] = getMagnitude(fftLeft[i * 2], fftLeft[i * 2 + 1]);
-            dB[i] = getDecibels(mag[i]);
-            geomScale[i] = mag[i] * .00005f;
+            mag[i] = (float) Math.sqrt((fftLeft[i*2] * fftLeft[i*2]) + (fftLeft[i*2+1] * fftLeft[i*2+1]));
+            geomScale[i] = (float) (20f * Math.log10(mag[i]));
         }
 
         line.write(pcm.getData(), 0, pcm.getLen());
     }
 
-    private float getDecibels(float magnitude) {
-        return (float) (20f * Math.log10(magnitude));
-    }
-
-    private float getMagnitude(float re, float im) {
-        return (float) Math.sqrt((re * re) + (im * im));
-    }
-
-    private float hanningWindow(short in, int index, int size) {
-        return (float) (in * 0.5f * (1.0f - Math.cos(2.0f * Math.PI * (float) (index) / (float) (size - 1.0f))));
+    private void hanningWindow(short[] in, float[] store) {
+        for(int i = 0; i < in.length; ++i) {
+            float mult = (float) (0.5 * (1 - Math.cos((2*Math.PI*i)/in.length)));
+            store[i] = in[i] * mult;
+        }
     }
 
     public void addListener(LineListener listener) {
